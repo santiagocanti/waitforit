@@ -41,6 +41,7 @@ func main() {
 	printVersion := flag.Bool("v", false, "show the current version")
 	debug := flag.Bool("debug", false, "enable debug")
 	file := flag.String("file", "", "path of json file to read configs from")
+	waitingFor := flag.Bool("waitingFor", false, "show connections being waited for")
 
 	flag.Parse()
 
@@ -81,7 +82,7 @@ func main() {
 		}
 	}
 
-	if err := DialConfigs(fc.Configs, print); err != nil {
+	if err := DialConfigs(fc.Configs, print, *waitingFor); err != nil {
 		log.Fatal(err)
 	}
 

@@ -9,49 +9,101 @@ import (
 	"time"
 )
 
+type result struct {
+	conn *Connection
+	err  error
+}
+
 // DialConfigs dial multiple connections at same time
-func DialConfigs(confs []Config, print func(a ...interface{})) error {
-	ch := make(chan error)
+func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) error {
+	ch := make(chan *result)
+	var connsWaitingFor []*Connection
+
+	if waitingFor {
+		fmt.Println(getMessageConfs(confs))
+	}
+
 	for _, config := range confs {
 		go func(conf Config) {
 			conn := BuildConn(&conf)
 			if conn == nil {
-				ch <- fmt.Errorf("Invalid connection %#v", conf)
+				res := new(result)
+				res.conn = nil
+				res.err = fmt.Errorf("Invalid connection %#v", conf)
+				ch <- res
 				return
 			}
+
+			connsWaitingFor = append(connsWaitingFor, conn)
 
 			ch <- DialConn(conn, conf.Timeout, conf.Retry, print)
 		}(config)
 	}
 
 	for i := 0; i < len(confs); i++ {
-		if err := <-ch; err != nil {
-			return err
+		res := <-ch
+
+		if waitingFor {
+			connsWaitingFor = removeConn(connsWaitingFor, res.conn)
+			if len(connsWaitingFor) > 0 {
+				fmt.Println(getMessage(connsWaitingFor))
+			} else {
+				fmt.Println("All hosts are running")
+			}
+		}
+
+		if res.err != nil {
+			return res.err
 		}
 	}
 
 	return nil
 }
 
+func getMessage(conns []*Connection) string {
+	message := "\033[H\033[2JWaiting for: "
+
+	for _, conn := range conns {
+		message += "\nHost: " + conn.Host + " Port: " + strconv.Itoa(conn.Port)
+	}
+
+	return message
+}
+
+func getMessageConfs(confs []Config) string {
+	message := "\033[H\033[2JWaiting for: "
+
+	for _, conf := range confs {
+		message += "\nHost: " + conf.Host + " Port: " + strconv.Itoa(conf.Port)
+	}
+
+	return message
+}
+
 // DialConn check if the connection is available
-func DialConn(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) error {
+func DialConn(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) *result {
 	print("Waiting " + strconv.Itoa(timeoutSeconds) + " seconds")
-	if err := pingTCP(conn, timeoutSeconds, retryMseconds, print); err != nil {
-		return err
+	res := pingTCP(conn, timeoutSeconds, retryMseconds, print)
+
+	if res.err != nil {
+		return res
 	}
 
 	if conn.Scheme != "http" && conn.Scheme != "https" {
-		return nil
+		return res
 	}
 
 	return pingHTTP(conn, timeoutSeconds, retryMseconds, print)
 }
 
-func pingHTTP(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) error {
+func pingHTTP(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) *result {
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	start := time.Now()
 	address := fmt.Sprintf("%s://%s:%d%s", conn.Scheme, conn.Host, conn.Port, conn.Path)
 	print("HTTP address: " + address)
+	res := new(result)
+	res.conn = conn
+	res.err = nil
 
 	for {
 		resp, err := http.Get(address)
@@ -61,22 +113,26 @@ func pingHTTP(conn *Connection, timeoutSeconds int, retryMseconds int, print fun
 		}
 
 		if err == nil && resp.StatusCode < http.StatusInternalServerError {
-			return nil
+			return res
 		}
 
 		if time.Since(start) > timeout {
-			return errors.New(resp.Status)
+			res.err = errors.New(resp.Status)
+			return res
 		}
 
 		time.Sleep(time.Duration(retryMseconds) * time.Millisecond)
 	}
 }
 
-func pingTCP(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) error {
+func pingTCP(conn *Connection, timeoutSeconds int, retryMseconds int, print func(a ...interface{})) *result {
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	start := time.Now()
 	address := fmt.Sprintf("%s:%d", conn.Host, conn.Port)
 	print("Dial address: " + address)
+	res := new(result)
+	res.conn = conn
+	res.err = nil
 
 	for {
 		_, err := net.DialTimeout(conn.Type, address, time.Second)
@@ -84,15 +140,27 @@ func pingTCP(conn *Connection, timeoutSeconds int, retryMseconds int, print func
 
 		if err == nil {
 			print("Up: " + address)
-			return nil
+			return res
 		}
 
 		print("Down: " + address)
 		print(err)
 		if time.Since(start) > timeout {
-			return err
+			res.err = err
+			return res
 		}
 
 		time.Sleep(time.Duration(retryMseconds) * time.Millisecond)
 	}
+}
+
+func removeConn(connsWaitingFor []*Connection, connToRemove *Connection) []*Connection {
+	for i, conn := range connsWaitingFor {
+		if conn == connToRemove {
+			connsWaitingFor = append(connsWaitingFor[:i], connsWaitingFor[i+1:]...)
+			break
+		}
+	}
+
+	return connsWaitingFor
 }
