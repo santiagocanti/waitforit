@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type result struct {
 func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) error {
 	ch := make(chan *result)
 	var connsWaitingFor []*Connection
+	var mutex = &sync.Mutex{}
 
 	if waitingFor {
 		fmt.Println(getMessageConfs(confs))
@@ -27,14 +29,13 @@ func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) 
 		go func(conf Config) {
 			conn := BuildConn(&conf)
 			if conn == nil {
-				res := new(result)
-				res.conn = nil
-				res.err = fmt.Errorf("Invalid connection %#v", conf)
-				ch <- res
+				ch <- &result{nil, fmt.Errorf("Invalid connection %#v", conf)}
 				return
 			}
 
+			mutex.Lock()
 			connsWaitingFor = append(connsWaitingFor, conn)
+			mutex.Unlock()
 
 			ch <- DialConn(conn, conf.Timeout, conf.Retry, print)
 		}(config)
@@ -46,7 +47,7 @@ func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) 
 		if waitingFor {
 			connsWaitingFor = removeConn(connsWaitingFor, res.conn)
 			if len(connsWaitingFor) > 0 {
-				fmt.Println(getMessage(connsWaitingFor))
+				fmt.Println(getMessageConns(connsWaitingFor))
 			} else {
 				fmt.Println("All hosts are running")
 			}
@@ -60,7 +61,28 @@ func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) 
 	return nil
 }
 
-func getMessage(conns []*Connection) string {
+// func getMessage(things ...interface{}) string {
+// 	message := "\033[H\033[2JWaiting for: "
+
+// 	// for _, conn := range conns {
+// 	// 	message += "\nHost: " + conn.Host + " Port: " + strconv.Itoa(conn.Port)
+// 	// }
+
+// 	for _, val := range things {
+// 		switch val.(type) {
+// 		case Connection:
+// 			message += "\nHost: " + val.(Connection).Host + " Port: " + strconv.Itoa(val.(Connection).Port)
+// 		case Config:
+// 			message += "\nHost: " + val.(Config).Host + " Port: " + strconv.Itoa(val.(Config).Port)
+// 		default:
+// 			panic("unexpected type")
+// 		}
+// 	}
+
+// 	return message
+// }
+
+func getMessageConns(conns []*Connection) string {
 	message := "\033[H\033[2JWaiting for: "
 
 	for _, conn := range conns {
@@ -101,9 +123,10 @@ func pingHTTP(conn *Connection, timeoutSeconds int, retryMseconds int, print fun
 	start := time.Now()
 	address := fmt.Sprintf("%s://%s:%d%s", conn.Scheme, conn.Host, conn.Port, conn.Path)
 	print("HTTP address: " + address)
-	res := new(result)
-	res.conn = conn
-	res.err = nil
+	res := &result{
+		conn: conn,
+		err: nil,
+	}
 
 	for {
 		resp, err := http.Get(address)
@@ -130,9 +153,10 @@ func pingTCP(conn *Connection, timeoutSeconds int, retryMseconds int, print func
 	start := time.Now()
 	address := fmt.Sprintf("%s:%d", conn.Host, conn.Port)
 	print("Dial address: " + address)
-	res := new(result)
-	res.conn = conn
-	res.err = nil
+	res := &result{
+		conn: conn,
+		err: nil,
+	}
 
 	for {
 		_, err := net.DialTimeout(conn.Type, address, time.Second)
