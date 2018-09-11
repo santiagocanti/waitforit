@@ -14,14 +14,17 @@ Wait until an address become available.
 
 ### Options
 
-- `-address`: Address (e.g. http://google.com or tcp://mysql_ip:mysql_port) - *former **full-connection***
+- `-address`: Address (e.g. http://google.com, tcp://mysql-ip:port, ssh://ip:port) - *former **full-connection***
+- `-proto`: Protocol to use during the connection
 - `-host`: Host to connect
 - `-port`: Port to connect (default 80)
+- `-status`: Expected status that address should return (e.g. 200)
 - `-timeout`: Seconds to wait until the address become available
 - `-retry`: Milliseconds to wait between retries (default 500)
 - `-debug`: Enable debug
 - `-v`: Show the current version
 - `-file`: Path to the JSON file with the configs
+- `-header`: List of headers sent in the http(s) ping request
 - `-- `: Execute a post command once the address became available
 
 ### Example
@@ -38,6 +41,8 @@ waitforit -address=http://google.com -timeout=20 -debug
 waitforit -address=http://google.com:90 -timeout=20 -retry=500 -debug
 
 waitforit -address=http://google.com -timeout=20 -debug -- printf "Google Works\!"
+
+waitforit -address=http://google.com -header "Authorization: Basic Zm9vOmJhcg==" -header "X-ID: 111" -debug
 ```
 
 #### Using with config file
@@ -52,7 +57,11 @@ Example JSON:
       "host": "google.com",
       "port": 80,
       "timeout": 20,
-      "retry": 500
+      "retry": 500,
+      "headers": {
+        "Authorization": "Basic Zm9vOmJhcg==",
+        "X-ID": "111"
+      }
     },
     {
       "address": "http://google.com:80",
@@ -73,7 +82,7 @@ waitforit -file=./config.json
 ```
 FROM node:6.5.0
 
-ENV WAITFORIT_VERSION="v1.3.1"
+ENV WAITFORIT_VERSION="v2.4.0"
 RUN curl -o /usr/local/bin/waitforit -sSL https://github.com/maxcnunes/waitforit/releases/download/$WAITFORIT_VERSION/waitforit-linux_amd64 && \
     chmod +x /usr/local/bin/waitforit
 ```
@@ -83,7 +92,7 @@ RUN curl -o /usr/local/bin/waitforit -sSL https://github.com/maxcnunes/waitforit
 ```
 FROM node:6.5.0
 
-ENV WAITFORIT_VERSION="v1.3.1"
+ENV WAITFORIT_VERSION="v2.4.0"
 RUN wget -q -O /usr/local/bin/waitforit https://github.com/maxcnunes/waitforit/releases/download/$WAITFORIT_VERSION/waitforit-linux_amd64 \
     && chmod +x /usr/local/bin/waitforit
 ```

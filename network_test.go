@@ -1,10 +1,11 @@
 package main_test
 
 import (
+	"encoding/base64"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,10 +30,12 @@ func (s *Server) Start() (err error) {
 		return nil
 	}
 
-	addr := net.JoinHostPort(s.conn.Host, strconv.Itoa(s.conn.Port))
-	s.listener, err = net.Listen(s.conn.Type, addr)
+	s.listener, err = net.Listen(s.conn.NetworkType, s.conn.URL.Host)
+	if err != nil {
+		return err
+	}
 
-	if s.conn.Scheme == "http" {
+	if s.conn.URL.Scheme == "http" {
 		s.server = &httptest.Server{
 			Listener: s.listener,
 			Config:   &http.Server{Handler: s.serverHandler},
@@ -40,7 +43,7 @@ func (s *Server) Start() (err error) {
 
 		s.server.Start()
 	}
-	return err
+	return nil
 }
 
 func (s *Server) Close() (err error) {
@@ -48,7 +51,7 @@ func (s *Server) Close() (err error) {
 		return nil
 	}
 
-	if s.conn.Scheme == "http" {
+	if s.conn.URL.Scheme == "http" {
 		if s.server != nil {
 			s.server.Close()
 		}
@@ -65,15 +68,18 @@ func TestDialConn(t *testing.T) {
 
 	testCases := []struct {
 		title         string
-		conn          Connection
+		cfg           *Config
+		status        int
 		allowStart    bool
 		openConnAfter int
 		finishOk      bool
+		headers       map[string]string
 		serverHanlder http.Handler
 	}{
 		{
 			title:         "Should successfully check connection that is already available.",
-			conn:          Connection{Type: "tcp", Scheme: "", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 0,
 			finishOk:      true,
@@ -81,7 +87,8 @@ func TestDialConn(t *testing.T) {
 		},
 		{
 			title:         "Should successfully check connection that open before reach the timeout.",
-			conn:          Connection{Type: "tcp", Scheme: "", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 2,
 			finishOk:      true,
@@ -89,7 +96,8 @@ func TestDialConn(t *testing.T) {
 		},
 		{
 			title:         "Should successfully check a HTTP connection that is already available.",
-			conn:          Connection{Type: "tcp", Scheme: "http", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 0,
 			finishOk:      true,
@@ -97,7 +105,8 @@ func TestDialConn(t *testing.T) {
 		},
 		{
 			title:         "Should successfully check a HTTP connection that open before reach the timeout.",
-			conn:          Connection{Type: "tcp", Scheme: "http", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 2,
 			finishOk:      true,
@@ -105,7 +114,8 @@ func TestDialConn(t *testing.T) {
 		},
 		{
 			title:         "Should successfully check a HTTP connection that returns 404 status code.",
-			conn:          Connection{Type: "tcp", Scheme: "http", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 0,
 			finishOk:      true,
@@ -115,13 +125,55 @@ func TestDialConn(t *testing.T) {
 		},
 		{
 			title:         "Should fail checking a HTTP connection that returns 500 status code.",
-			conn:          Connection{Type: "tcp", Scheme: "http", Port: 8080, Host: "localhost", Path: ""},
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        0,
 			allowStart:    true,
 			openConnAfter: 0,
 			finishOk:      false,
 			serverHanlder: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "", 500)
 			}),
+		},
+		{
+			title:         "Should successfully check a HTTP connection that returns 200 status code before reach the timeout.",
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        200,
+			allowStart:    true,
+			openConnAfter: 2,
+			finishOk:      true,
+			serverHanlder: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write([]byte("OK"))
+			}),
+		},
+		{
+			title:         "Should fail checking a HTTP connection that returns not expected status code.",
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        200,
+			allowStart:    true,
+			openConnAfter: 0,
+			finishOk:      false,
+			serverHanlder: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "", 404)
+			}),
+		},
+		{
+			title:         "Should not crash on checking a HTTP connection with not authorized basic auth.",
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        0,
+			allowStart:    true,
+			openConnAfter: 0,
+			finishOk:      true,
+			serverHanlder: http.HandlerFunc(basicAuthHandler),
+		},
+		{
+			title:         "Should support passing basic auth header on checking a HTTP connection.",
+			cfg:           &Config{Address: "http://localhost:8080"},
+			status:        200,
+			allowStart:    true,
+			openConnAfter: 0,
+			finishOk:      true,
+			headers:       map[string]string{"Authorization": "Basic Zm9vOmJhcg=="},
+			serverHanlder: http.HandlerFunc(basicAuthHandler),
 		},
 	}
 
@@ -130,7 +182,13 @@ func TestDialConn(t *testing.T) {
 	for _, v := range testCases {
 		t.Run(v.title, func(t *testing.T) {
 			var err error
-			s := NewServer(&v.conn, v.serverHanlder)
+
+			conn, err := BuildConn(&Config{Address: v.cfg.Address})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			s := NewServer(conn, v.serverHanlder)
 			defer s.Close() // nolint
 
 			if v.allowStart {
@@ -139,26 +197,33 @@ func TestDialConn(t *testing.T) {
 						time.Sleep(time.Duration(v.openConnAfter) * time.Second)
 					}
 
-					if err := s.Start(); err != nil {
+					if err = s.Start(); err != nil {
 						t.Error(err)
 					}
 				}()
 			}
 
-			err = DialConn(&v.conn, defaultTimeout, defaultRetry, print)
+			conf := &Config{
+				Timeout: defaultTimeout,
+				Retry:   defaultRetry,
+				Status:  v.status,
+				Headers: v.headers,
+			}
+
+			err = DialConn(conn, conf, print)
 			if err != nil && v.finishOk {
-				t.Errorf("Expected to connect successfully %#v. But got error %v.", v.conn, err)
+				t.Errorf("Expected to connect successfully %s. But got error %v.", v.cfg.Address, err)
 				return
 			}
 
 			if err == nil && !v.finishOk {
-				t.Errorf("Expected to not connect successfully %#v.", v.conn)
+				t.Errorf("Expected to not connect successfully %s.", v.cfg.Address)
 			}
 		})
 	}
 }
 
-func TestDialConfigs(t *testing.T) {
+func TestDialConfigs(t *testing.T) { // nolint gocyclo
 	print := func(a ...interface{}) {}
 
 	type testItem struct {
@@ -254,7 +319,10 @@ func TestDialConfigs(t *testing.T) {
 					finishAllOk = false
 				}
 
-				conn := BuildConn(&item.conf)
+				conn, err := BuildConn(&item.conf)
+				if err != nil {
+					t.Fatal(err)
+				}
 
 				s := NewServer(conn, item.serverHanlder)
 				defer s.Close() // nolint
@@ -283,4 +351,43 @@ func TestDialConfigs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func basicAuthHandler(w http.ResponseWriter, r *http.Request) {
+	authorizationArray := r.Header["Authorization"]
+
+	if len(authorizationArray) > 0 {
+		authorization := strings.TrimSpace(authorizationArray[0])
+		credentials := strings.Split(authorization, " ")
+
+		if len(credentials) != 2 || credentials[0] != "Basic" {
+			unauthorized(w)
+			return
+		}
+
+		authstr, err := base64.StdEncoding.DecodeString(credentials[1])
+		if err != nil {
+			unauthorized(w)
+			return
+		}
+
+		userpass := strings.Split(string(authstr), ":")
+		if len(userpass) != 2 {
+			unauthorized(w)
+			return
+		}
+
+		if userpass[0] == "foo" && userpass[1] == "bar" {
+			w.Write([]byte("OK"))
+		} else {
+			unauthorized(w)
+		}
+	} else {
+		unauthorized(w)
+	}
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Basic realm=\"user\"")
+	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 }
