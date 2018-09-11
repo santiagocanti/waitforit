@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -19,24 +18,29 @@ type result struct {
 func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) error {
 	ch := make(chan *result)
 	var connsWaitingFor []*Connection
-	var mutex = &sync.Mutex{}
 
 	if waitingFor {
-		fmt.Println(getMessageConfs(confs))
+		message := "\033[H\033[2JWaiting for: "
+
+		for _, conf := range confs {
+			message += "\nHost: " + conf.Host + " Port: " + strconv.Itoa(conf.Port)
+		}
+
+		fmt.Println(message)
 	}
 
 	for _, config := range confs {
+		conn := BuildConn(&config)
+
+		if conn == nil {
+			err := fmt.Errorf("Invalid connection %#v", config)
+			ch <- &result{nil, err}
+			return err
+		}
+
+		connsWaitingFor = append(connsWaitingFor, conn)
+
 		go func(conf Config) {
-			conn := BuildConn(&conf)
-			if conn == nil {
-				ch <- &result{nil, fmt.Errorf("Invalid connection %#v", conf)}
-				return
-			}
-
-			mutex.Lock()
-			connsWaitingFor = append(connsWaitingFor, conn)
-			mutex.Unlock()
-
 			ch <- DialConn(conn, conf.Timeout, conf.Retry, print)
 		}(config)
 	}
@@ -47,9 +51,15 @@ func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) 
 		if waitingFor {
 			connsWaitingFor = removeConn(connsWaitingFor, res.conn)
 			if len(connsWaitingFor) > 0 {
-				fmt.Println(getMessageConns(connsWaitingFor))
+				message := "\033[H\033[2JWaiting for: "
+
+				for _, conn := range connsWaitingFor {
+					message += "\nHost: " + conn.Host + " Port: " + strconv.Itoa(conn.Port)
+				}
+
+				fmt.Println(message)
 			} else {
-				fmt.Println("All hosts are running")
+				fmt.Println("\033[H\033[2JAll hosts are running")
 			}
 		}
 
@@ -59,47 +69,6 @@ func DialConfigs(confs []Config, print func(a ...interface{}), waitingFor bool) 
 	}
 
 	return nil
-}
-
-// func getMessage(things ...interface{}) string {
-// 	message := "\033[H\033[2JWaiting for: "
-
-// 	// for _, conn := range conns {
-// 	// 	message += "\nHost: " + conn.Host + " Port: " + strconv.Itoa(conn.Port)
-// 	// }
-
-// 	for _, val := range things {
-// 		switch val.(type) {
-// 		case Connection:
-// 			message += "\nHost: " + val.(Connection).Host + " Port: " + strconv.Itoa(val.(Connection).Port)
-// 		case Config:
-// 			message += "\nHost: " + val.(Config).Host + " Port: " + strconv.Itoa(val.(Config).Port)
-// 		default:
-// 			panic("unexpected type")
-// 		}
-// 	}
-
-// 	return message
-// }
-
-func getMessageConns(conns []*Connection) string {
-	message := "\033[H\033[2JWaiting for: "
-
-	for _, conn := range conns {
-		message += "\nHost: " + conn.Host + " Port: " + strconv.Itoa(conn.Port)
-	}
-
-	return message
-}
-
-func getMessageConfs(confs []Config) string {
-	message := "\033[H\033[2JWaiting for: "
-
-	for _, conf := range confs {
-		message += "\nHost: " + conf.Host + " Port: " + strconv.Itoa(conf.Port)
-	}
-
-	return message
 }
 
 // DialConn check if the connection is available
@@ -125,7 +94,7 @@ func pingHTTP(conn *Connection, timeoutSeconds int, retryMseconds int, print fun
 	print("HTTP address: " + address)
 	res := &result{
 		conn: conn,
-		err: nil,
+		err:  nil,
 	}
 
 	for {
@@ -155,7 +124,7 @@ func pingTCP(conn *Connection, timeoutSeconds int, retryMseconds int, print func
 	print("Dial address: " + address)
 	res := &result{
 		conn: conn,
-		err: nil,
+		err:  nil,
 	}
 
 	for {
